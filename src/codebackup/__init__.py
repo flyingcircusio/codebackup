@@ -1,112 +1,116 @@
-import sys
-import os
 from os import path
-import json
-import urllib
-import requests
-from subprocess import call
-
 import argparse
+import json
+import multiprocessing.pool
+import os
+import random
+import requests
+import subprocess
+import sys
+import urllib
 
 
-class User(object):
+class Repository(object):
     """A registered user at a code hosting site"""
     
-    def __init__(self, username, backupdir):
-        self.username = username
-        self.backupdir = backupdir
-    
-    def get_repositories(self):
-        """Return the list repositories for this user"""
-        j = json.load(urllib.urlopen(self.REPO_LIST_API.format(**locals())))
-        return [r['name'] for r in j['repositories']]
-        
-    @property
-    def target_dir(self):
-        return path.join(self.backupdir, self.NAME)
-        
-    def get_repo_dir(self, repo_name):
-        return path.join(self.target_dir, repo_name)
-        
-    def clone_repository(self, repo_name):
-        assert not path.exists(self.get_repo_dir(repo_name))
-        
+    failed = None
+    output = None
+
+    def __init__(self, site, name):
+        self.site = site
+        self.name = name
+
+    def backup(self, target):
+        print 'Backing up {}/{}'.format(self.site.name, self.name)
+        target = os.path.join(target, self.site.name, self.name)
+        try:
+            if not path.exists(target):
+                self.clone_repository(target)
+            else:
+                self.update_repository(target)
+        except Exception, e:
+            print 'Failed to back up', self.name
+            self.failed = e
+
+    def clone_repository(self, target):
+        assert not os.path.exists(target)
         url = self.CLONE_URL.format(**locals())
-        if not path.exists(self.target_dir):
-            os.makedirs(self.target_dir)
-        return call(self.CLONE_CMD.format(**locals()).split(), cwd=self.target_dir)
+        os.makedirs(target)
+        self.output = subprocess.check_output(
+            self.CLONE_CMD.format(**locals()).split(),
+            stderr=subprocess.STDOUT,
+            cwd=target)
         
-    def update_repository(self, repo_name):
-        repo_dir = self.get_repo_dir(repo_name)
-        print 'Backing up {0}/{1}/{2}'.format(self.NAME, self.username, repo_name)
-        if not path.exists(repo_dir):
-            return self.clone_repository(repo_name)
-        else:
-            url = self.CLONE_URL.format(**locals())
-            return call(self.UPDATE_CMD.format(**locals()).split(), cwd=repo_dir)
+    def update_repository(self, target):
+        url = self.CLONE_URL.format(**locals())
+        self.output = subprocess.check_output(
+            self.UPDATE_CMD.format(**locals()).split(),
+            stderr=subprocess.STDOUT,
+            cwd=target)
 
 
-class GithubUser(User):
-    
-    NAME = 'github'
-    # API URL to grab repository list
-    REPO_LIST_API = 'http://github.com/api/v2/json/repos/show/{self.username}'
-    # github clone URL
-    CLONE_URL = 'git://github.com/{self.username}/{repo_name}.git'
-    CLONE_CMD = 'git clone {url}'
-    UPDATE_CMD = 'git pull'
-    
-        
-class BitbucketUser(User):
-    
-    NAME = 'bitbucket'
+class Bitbucket(object):
+
+    name = 'bitbucket'
     REPO_LIST_API = 'https://api.bitbucket.org/1.0/users/{self.username}/'
-    CLONE_URL = 'ssh://bitbucket.org/{self.username}/{repo_name}/'
-    CLONE_CMD = 'hg clone {url}'
-    UPDATE_CMD = 'hg pull -u {url}'
 
-    def __init__(self, username, password, backupdir):
-        super(BitbucketUser, self).__init__(username, backupdir)
+    def __init__(self, username, password):
+        self.username = username
         self.password = password
 
     def get_repositories(self):
-        """Return the list repositories for this user"""
+        """Get all repositories for this site."""
         response = requests.get(self.REPO_LIST_API.format(**locals()),
                                 auth=(self.username, self.password))
         j = json.loads(response.text)
-        return [r['name'] for r in j['repositories']]
+        for repo in j['repositories']:
+            if repo['scm'] == 'hg':
+                yield HGRepository(self, repo['name'])
+            elif repo['scm'] == 'git':
+                yield GITRepository(self, repo['name'])
+
+
+class HGRepository(Repository):
+
+    CLONE_URL = 'ssh://bitbucket.org/{self.site.username}/{self.name}/'
+    CLONE_CMD = 'hg clone -U {url} .'
+    UPDATE_CMD = 'hg pull {url}'
+
+
+class GITRepository(Repository):
+
+    CLONE_URL = 'git@bitbucket.org:{self.site.username}/{self.name}.git'
+    CLONE_CMD = 'git clone --no-checkout {url} .'
+    UPDATE_CMD = 'git pull'
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="A simple tool to backup your Github and Bitbucket repositories",
+        description="A simple tool to backup your Bitbucket repositories",
     )
     
-    parser.add_argument('--github-user', type=str, help='your Github username')
-    parser.add_argument('--bitbucket-user', type=str, help='Bitbucket username')
-    parser.add_argument('--bitbucket-password', type=str, help='Bitbucket password')
-    
+    parser.add_argument('username', type=str, help='Username')
+    parser.add_argument('password', type=str, help='Password')
     parser.add_argument('backupdir', type=str, 
                         help='The target backup directory')
     
     args = parser.parse_args()
     
-    failed = []
-    
-    def backup_site(klass, *args):
-        u = klass(*args)
-        for repo_name in u.get_repositories():
-            ret = u.update_repository(repo_name)
-            if ret:
-                failed.append('{0.NAME}/{1}'.format(u, repo_name))
-            
-    if args.github_user:
-        backup_site(GithubUser, args.github_user, args.backupdir)
-    if args.bitbucket_user:
-        backup_site(BitbucketUser,
-                args.bitbucket_user, args.bitbucket_password, args.backupdir)
-    
-    if failed:
+    bitbucket = Bitbucket(args.username, args.password)
+    repos = list(bitbucket.get_repositories())
+    random.shuffle(repos)
+
+    pool = multiprocessing.pool.ThreadPool(20)
+    pool.map(lambda x: x.backup(args.backupdir), repos)
+
+    failed = 0
+    for repo in repos:
+        if repo.failed is None:
+            continue
+        failed += 1
         print 'WARNING: the following repositories failed to update:'
-        print '\n'.join(failed)
+        print repo.name
+        print repo.output
+        print repo.failed
+    if failed:
         sys.exit(2)
