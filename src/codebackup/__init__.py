@@ -3,6 +3,7 @@ import os
 from os import path
 import json
 import urllib
+import requests
 from subprocess import call
 
 import argparse
@@ -59,10 +60,21 @@ class GithubUser(User):
 class BitbucketUser(User):
     
     NAME = 'bitbucket'
-    REPO_LIST_API = 'http://api.bitbucket.org/1.0/users/{self.username}/'
-    CLONE_URL = 'http://bitbucket.org/{self.username}/{repo_name}/'
+    REPO_LIST_API = 'https://api.bitbucket.org/1.0/users/{self.username}/'
+    CLONE_URL = 'ssh://bitbucket.org/{self.username}/{repo_name}/'
     CLONE_CMD = 'hg clone {url}'
-    UPDATE_CMD = 'hg pull -u'
+    UPDATE_CMD = 'hg pull -u {url}'
+
+    def __init__(self, username, password, backupdir):
+        super(BitbucketUser, self).__init__(username, backupdir)
+        self.password = password
+
+    def get_repositories(self):
+        """Return the list repositories for this user"""
+        response = requests.get(self.REPO_LIST_API.format(**locals()),
+                                auth=(self.username, self.password))
+        j = json.loads(response.text)
+        return [r['name'] for r in j['repositories']]
 
 
 def main():
@@ -71,7 +83,9 @@ def main():
     )
     
     parser.add_argument('--github-user', type=str, help='your Github username')
-    parser.add_argument('--bitbucket-user', type=str, help='your Bitbucket username')
+    parser.add_argument('--bitbucket-user', type=str, help='Bitbucket username')
+    parser.add_argument('--bitbucket-password', type=str, help='Bitbucket password')
+    
     parser.add_argument('backupdir', type=str, 
                         help='The target backup directory')
     
@@ -79,17 +93,18 @@ def main():
     
     failed = []
     
-    def backup_site(klass, username):
-        u = klass(username, args.backupdir)
+    def backup_site(klass, *args):
+        u = klass(*args)
         for repo_name in u.get_repositories():
             ret = u.update_repository(repo_name)
             if ret:
                 failed.append('{0.NAME}/{1}'.format(u, repo_name))
             
     if args.github_user:
-        backup_site(GithubUser, args.github_user)
+        backup_site(GithubUser, args.github_user, args.backupdir)
     if args.bitbucket_user:
-        backup_site(BitbucketUser, args.bitbucket_user)
+        backup_site(BitbucketUser,
+                args.bitbucket_user, args.bitbucket_password, args.backupdir)
     
     if failed:
         print 'WARNING: the following repositories failed to update:'
