@@ -76,7 +76,7 @@ class Bitbucket(object):
 
 class HGRepository(Repository):
 
-    CLONE_URL = 'ssh://bitbucket.org/{self.site.username}/{self.name}/'
+    CLONE_URL = 'ssh://hg@bitbucket.org/{self.site.username}/{self.name}/'
     CLONE_CMD = 'hg clone -U {url} .'
     UPDATE_CMD = 'hg pull {url}'
 
