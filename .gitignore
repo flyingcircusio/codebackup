@@ -3,6 +3,8 @@
 .installed.cfg
 bin
 develop-eggs
+lib
+include
 
 *.egg-info
 

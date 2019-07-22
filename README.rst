@@ -7,18 +7,17 @@ repositories to the specified directory.
 Installing
 ----------
 
-Use one of the following commands (the later works in ActivePython)::
+::
+    $ python3.7 -m venv .
+    $ ./bin/pip install -e .
 
-    $ sudo pip install codebackup
-    
-    $ pypm install codebackup
 
 Usage
 -----
 
 ::
 
-    $ codebackup --github-user=srid --bitbucket-user=srid ~/Dropbox/codebackup
+    $ ./bin/codebackup --github-user=srid --bitbucket-user=srid ~/Dropbox/codebackup
 
 Credits
 -------
